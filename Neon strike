@@ -1,1 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEON STRIKE - Multiplayer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&display=swap');
+  body{margin:0;background:#05050a;overflow:hidden;font-family:'Orbitron',monospace;color:#fff;user-select:none}
+  canvas{display:block; background: radial-gradient(circle at center, #111122 0%, #05050a 100%);}
+  #menu{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;background:rgba(0,0,0,0.9);z-index:10}
+  #menu h1{font-size:60px;margin:0;color:#0ff;text-shadow:0 0 30px #0ff, 0 0 60px #0ff;letter-spacing:5px}
+  #menu p{color:#888}
+ .btn{background:transparent;border:2px solid #0ff;color:#0ff;padding:15px 40px;font-family:'Orbitron';font-size:18px;margin:10px;cursor:pointer;box-shadow:0 0 20px #0ff3;transition:0.2s}
+ .btn:hover{background:#0ff;color:#000;box-shadow:0 0 40px #0ff}
+ .input{background:#111;border:2px solid #333;color:#0ff;padding:15px;font-family:'Orbitron';font-size:20px;text-align:center;width:180px;letter-spacing:8px}
+  #hud{position:absolute;top:15px;left:15px;pointer-events:none}
+  #roomCode{position:absolute;top:15px;right:15px;background:#0ff1;border:1px solid #0ff;padding:8px 15px;font-size:14px}
+  #controls{position:absolute;bottom:10px;width:100%;text-align:center;color:#444;font-size:11px;pointer-events:none}
+</style>
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div id="menu">
+  <h1>NEON STRIKE</h1>
+  <p>MULTIPLAYER ONLINE SHOOTER</p>
+  <div id="setup">
+    <button class="btn" onclick="createRoom()">CREATE ROOM</button><br>
+    <div style="margin-top:30px">
+      <input id="joinInput" class="input" placeholder="CODE" maxlength="4">
+      <br><button class="btn" onclick="joinRoom()">JOIN ROOM</button>
+    </div>
+  </div>
+  <div id="waiting" style="display:none">
+    <h2 style="color:#0ff">ROOM CODE: <span id="codeDisplay"></span></h2>
+    <p>Send this code to friends</p>
+    <p>Players: <span id="playerCount">1</span>/6</p>
+    <button class="btn" onclick="startGame()">START BATTLE</button>
+  </div>
+</div>
+<div id="hud">HP: <span id="hp">100</span> | KILLS: <span id="kills">0</span></div>
+<div id="roomCode" style="display:none">ROOM: <span id="roomCodeText"></span></div>
+<div id="controls">WASD to move | MOUSE to aim | CLICK to shoot | Mobile: drag left side to move, right side to aim</div>
+<canvas id="c"></canvas>
 
+<script>
+const canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
+canvas.width=innerWidth; canvas.height=innerHeight;
+let peer, connList=[], isHost=false, roomId, myId=Math.random().toString(36).substr(2,4).toUpperCase();
+let players={}, bullets=[], particles=[], keys={}, mouse={x:0,y:0}, myPlayer=null, gameStarted=false;
+
+const mapW=2000, mapH=2000;
+function createRoom(){
+  roomId=Math.random().toString(36).substr(2,4).toUpperCase();
+  peer=new Peer('neon-'+roomId);
+  peer.on('open',()=>{
+    isHost=true; document.getElementById('setup').style.display='none';
+    document.getElementById('waiting').style.display='block';
+    document.getElementById('codeDisplay').innerText=roomId;
+    initHostPlayer();
+  });
+  peer.on('connection',c=>{
+    connList.push(c);
+    c.on('data',d=>hostHandleData(c,d));
+    c.on('open',()=>{c.send({type:'init',id:c.peer,room:roomId}); updateCount();});
+  });
+}
+function joinRoom(){
+  let code=document.getElementById('joinInput').value.toUpperCase().trim();
+  if(code.length!=4) return alert('Enter 4-letter code');
+  roomId=code; peer=new Peer();
+  peer.on('open',()=>{
+    let conn=peer.connect('neon-'+roomId);
+    conn.on('open',()=>{
+      connList=[conn];
+      document.getElementById('menu').style.display='none';
+      document.getElementById('roomCode').style.display='block';
+      document.getElementById('roomCodeText').innerText=roomId;
+      conn.on('data',clientHandleData);
+    });
+  });
+}
+function initHostPlayer(){
+  myPlayer={id:peer.id,x:mapW/2,y:mapH/2,angle:0,hp:100,kills:0,color:'#00ffff'};
+  players[peer.id]=myPlayer;
+}
+function startGame(){
+  if(!isHost) return;
+  gameStarted=true;
+  document.getElementById('menu').style.display='none';
+  document.getElementById('roomCode').style.display='block';
+  document.getElementById('roomCodeText').innerText=roomId;
+  broadcast({type:'start',players});
+  loop();
+}
+function hostHandleData(c,data){
+  if(data.type==='join'){ players[c.peer]={id:c.peer,x:Math.random()*mapW,y:Math.random()*mapH,angle:0,hp:100,kills:0,color:`hsl(${Math.random()*360},100%,60%)`}; broadcast({type:'players',players}); }
+  if(data.type==='move'){ if(players[data.id]) Object.assign(players[data.id],data.state); }
+  if(data.type==='shoot'){ bullets.push({x:data.x,y:data.y,angle:data.angle,owner:data.id,life:60}); }
+}
+function clientHandleData(data){
+  if(data.type==='start'){ players=data.players; gameStarted=true; myPlayer=players[peer.id]||{id:peer.id,x:mapW/2,y:mapH/2,angle:0,hp:100,kills:0,color:'#ff00ff'}; if(!players[peer.id]) players[peer.id]=myPlayer; loop(); }
+  if(data.type==='players'){ players=data.players; if(!myPlayer){myPlayer=players[peer.id];} document.getElementById('playerCount').innerText=Object.keys(players).length; }
+  if(data.type==='world'){ players=data.players; bullets=data.bullets; }
+}
+function broadcast(d){ connList.forEach(c=>{ if(c.open) c.send(d); }); }
+function updateCount(){ document.getElementById('playerCount').innerText=Object.keys(players).length+connList.length; }
+
+// Input
+addEventListener('keydown',e=>keys[e.key.toLowerCase()]=true);
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+addEventListener('mousemove',e=>{mouse.x=e.clientX; mouse.y=e.clientY});
+canvas.addEventListener('mousedown',()=>shoot());
+
+function shoot(){
+  if(!myPlayer||myPlayer.hp<=0) return;
+  let angle=myPlayer.angle;
+  bullets.push({x:myPlayer.x,y:myPlayer.y,angle,owner:isHost?peer.id:peer.id,life:60});
+  if(!isHost) connList[0].send({type:'shoot',x:myPlayer.x,y:myPlayer.y,angle,id:peer.id});
+  else broadcast({type:'world',players,bullets});
+}
+
+let cam={x:0,y:0};
+function loop(){
+  requestAnimationFrame(loop);
+  if(!myPlayer) return;
+  // move
+  let speed=6;
+  if(keys['w']||keys['arrowup']) myPlayer.y-=speed;
+  if(keys['s']||keys['arrowdown']) myPlayer.y+=speed;
+  if(keys['a']||keys['arrowleft']) myPlayer.x-=speed;
+  if(keys['d']||keys['arrowright']) myPlayer.x+=speed;
+  myPlayer.x=Math.max(0,Math.min(mapW,myPlayer.x));
+  myPlayer.y=Math.max(0,Math.min(mapH,myPlayer.y));
+  let dx=mouse.x-canvas.width/2, dy=mouse.y-canvas.height/2;
+  myPlayer.angle=Math.atan2(dy,dx);
+
+  if(!isHost && connList[0]) connList[0].send({type:'move',id:peer.id,state:{x:myPlayer.x,y:myPlayer.y,angle:myPlayer.angle,hp:myPlayer.hp,kills:myPlayer.kills}});
+
+  // bullets
+  if(isHost){
+    bullets.forEach((b,i)=>{
+      b.x+=Math.cos(b.angle)*12; b.y+=Math.sin(b.angle)*12; b.life--;
+      for(let id in players){
+        if(id===b.owner) continue;
+        let p=players[id]; let d=Math.hypot(p.x-b.x,p.y-b.y);
+        if(d<25){ p.hp-=20; if(p.hp<=0){ p.hp=100; p.x=Math.random()*mapW; p.y=Math.random()*mapH; if(players[b.owner]) players[b.owner].kills++; } bullets.splice(i,1); particles.push({x:b.x,y:b.y,life:15}); }
+      }
+      if(b.life<=0) bullets.splice(i,1);
+    });
+    broadcast({type:'world',players,bullets});
+  }
+
+  // camera
+  cam.x=myPlayer.x-canvas.width/2; cam.y=myPlayer.y-canvas.height/2;
+  // draw
+  ctx.fillStyle='#05050a'; ctx.fillRect(0,0,canvas.width,canvas.height);
+  // grid
+  ctx.strokeStyle='#111'; ctx.lineWidth=1;
+  for(let x=-cam.x%50;x<canvas.width;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+  for(let y=-cam.y%50;y<canvas.height;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+
+  // players
+  for(let id in players){
+    let p=players[id]; let sx=p.x-cam.x, sy=p.y-cam.y;
+    if(sx<-50||sx>canvas.width+50||sy<-50||sy>canvas.height+50) continue;
+    ctx.save(); ctx.translate(sx,sy); ctx.rotate(p.angle);
+    ctx.shadowBlur=20; ctx.shadowColor=p.color; ctx.fillStyle=p.color;
+    ctx.fillRect(-12,-10,24,20);
+    ctx.fillStyle='#fff'; ctx.fillRect(8,-3,18,6);
+    ctx.restore();
+    // hp bar
+    ctx.fillStyle='#f00'; ctx.fillRect(sx-20,sy-30,40,4);
+    ctx.fillStyle='#0f0'; ctx.fillRect(sx-20,sy-30,40*(p.hp/100),4);
+  }
+  // bullets
+  ctx.fillStyle='#ff0'; bullets.forEach(b=>{ctx.beginPath();ctx.arc(b.x-cam.x,b.y-cam.y,4,0,Math.PI*2);ctx.fill();});
+  // particles
+  particles.forEach((p,i)=>{ctx.globalAlpha=p.life/15; ctx.fillStyle='#fff'; ctx.beginPath();ctx.arc(p.x-cam.x,p.y-cam.y,5,0,Math.PI*2);ctx.fill(); p.life--; if(p.life<=0) particles.splice(i,1);}); ctx.globalAlpha=1;
+
+  document.getElementById('hp').innerText=myPlayer.hp; document.getElementById('kills').innerText=myPlayer.kills;
+}
+window.onresize=()=>{canvas.width=innerWidth; canvas.height=innerHeight;};
+</script>
+</body>
+</html>
